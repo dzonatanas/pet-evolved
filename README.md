@@ -12,7 +12,7 @@ Authors: Made by Codex, supervised by Dzonas
 
 ## Requirements
 
-- Windows 11
+- Windows 11 (works with 10 too)
 - Python 3.10 or newer
 - Codex installed
 - One or more Codex pets installed in:
