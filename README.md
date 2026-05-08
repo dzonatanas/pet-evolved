@@ -4,7 +4,7 @@ Pet Evolved is a small Windows desktop pet app written in Python. It can load
 installed Codex pet sprites from `~/.codex/pets`, then let the pet wander around
 the desktop like a lightweight Tamagotchi-style companion.
 
-Version: `0.2.0`
+Version: `0.3.0`
 
 Date created: `2026-05-07`
 
@@ -12,7 +12,7 @@ Authors: Made by Codex, supervised by Dzonas
 
 ## Requirements
 
-- Windows 11 (works with 10 too)
+- Windows 11
 - Python 3.10 or newer
 - Codex installed
 - One or more Codex pets installed in:
@@ -76,8 +76,10 @@ The right-click menu includes:
 - Play
 - Sleep
 - Stats
+- Revive
 - Change Pet
 - Companions
+- Pet Settings
 - Help / About
 - Hide
 - Quit
@@ -97,6 +99,26 @@ remove it or make it play.
 
 When pets bump into each other, they briefly stop and play a small happy/playing
 "bump dance" before wandering again.
+
+## Pet Settings
+
+Use **Right-click → Pet Settings** to choose the phrase style for the selected
+pet:
+
+- Japanese
+- English
+- Custom
+
+Japanese and English show read-only phrase pools. Custom lets you edit one
+phrase per line. Settings are saved inside the pet folder:
+
+```text
+~/.codex/pets/<pet>/petconfig.json
+~/.codex/pets/<pet>/phrases.json
+```
+
+The app checks `phrases.json` first, then `petconfig.json`, then falls back to
+Japanese phrases. Changes apply immediately without restarting the app.
 
 ## Codex Pet Support
 
@@ -147,7 +169,8 @@ The saved state includes:
 - last seen time
 
 If the app is closed for a while, the pet will be hungrier or lower energy when
-you reopen it.
+you reopen it. Offline degradation is capped at 8 hours per launch so the pet
+does not instantly die after being closed overnight.
 
 ## Notes
 

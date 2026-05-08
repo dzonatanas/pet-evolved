@@ -21,7 +21,7 @@ except ImportError:  # pragma: no cover - tray is optional
 
 
 APP_NAME = "Tiny Desktop Pet"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 APP_CREATED = "2026-05-07"
 APP_AUTHORS = "Made by Codex, supervised by Dzonas"
 TRANSPARENT = "#ff00ff"
@@ -42,32 +42,20 @@ CODEX_ROWS = {
 }
 
 
-PET_PHRASES = {
-    "rem": [
-        "From zero.",
-        "Let us begin.",
-        "I will help.",
-        "Tea is ready.",
-        "Please rest.",
-        "Stay steady.",
-    ],
-    "gojo": [
-        "I'm the strongest.",
-        "Too easy.",
-        "I've got this.",
-        "Yo, welcome back.",
-        "Limitless mood.",
-        "Nice try.",
-    ],
-}
+PHRASES_JP = [
+    "Nani?", "Sugoi!", "Uso!", "Yatta!", "Kawaii!", "Mou!",
+    "Ikuzo!", "Ikimashou!", "Ganbatte!", "Kisama!", "Dame!",
+    "Tasukete!", "Yamete!", "Urusai!", "Ohayou!", "Sayonara.",
+    "Arigatou.", "Daijoubu?", "Gomen...", "Gomen nasai.",
+    "Shinjite!", "Itadakimasu!", "Nakama.", "Senpai...", "Ore wa...!",
+]
 
-DEFAULT_PHRASES = [
-    "Hello.",
-    "Still here.",
-    "Tiny steps.",
-    "Need snacks?",
-    "Good progress.",
-    "Let's go.",
+PHRASES_EN = [
+    "Let's go!", "Amazing!", "Do your best!", "I did it!",
+    "No way!", "Stop!", "Help!", "Shut up!", "Sorry...",
+    "Are you okay?", "Goodbye.", "Thank you.", "Cute!",
+    "Believe in me!", "Geez!", "Don't!", "Come on!",
+    "Big brother...", "Let's eat!", "I'm with you.",
 ]
 
 
@@ -75,6 +63,60 @@ def installed_pet_ids() -> list[str]:
     if not PETS_DIR.exists():
         return []
     return [p.name for p in sorted(PETS_DIR.iterdir()) if (p / "pet.json").exists()]
+
+
+def pet_dir(pet_id: str | None) -> Path | None:
+    if not pet_id:
+        return None
+    return PETS_DIR / pet_id
+
+
+def read_pet_config(pet_id: str | None) -> dict:
+    directory = pet_dir(pet_id)
+    if not directory:
+        return {}
+    config_path = directory / "petconfig.json"
+    if not config_path.exists():
+        return {}
+    try:
+        return json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def read_custom_phrases(pet_id: str | None) -> list[str] | None:
+    directory = pet_dir(pet_id)
+    if not directory:
+        return None
+    phrases_path = directory / "phrases.json"
+    if not phrases_path.exists():
+        return None
+    try:
+        phrases = json.loads(phrases_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(phrases, list):
+        return None
+    cleaned = [str(phrase).strip() for phrase in phrases if str(phrase).strip()]
+    return cleaned or None
+
+
+def phrase_pool_for_pet(pet_id: str | None) -> tuple[str, list[str]]:
+    custom = read_custom_phrases(pet_id)
+    if custom:
+        return "custom", custom
+
+    language = str(read_pet_config(pet_id).get("phrase_language", "jp")).lower()
+    if language == "en":
+        return "en", PHRASES_EN
+    return "jp", PHRASES_JP
+
+
+def pick_phrase_sample(pet_id: str | None, count: int = 5) -> list[str]:
+    _language, phrases = phrase_pool_for_pet(pet_id)
+    if len(phrases) <= count:
+        return list(phrases)
+    return random.sample(phrases, count)
 
 
 @dataclass
@@ -90,6 +132,7 @@ class PetStats:
     def degrade(self, seconds: float) -> None:
         if not self.alive:
             return
+        seconds = min(seconds, 8 * 3600)
         hours = seconds / 3600
         self.hunger = max(0, self.hunger - 7.0 * hours)
         self.happiness = max(0, self.happiness - 4.0 * hours)
@@ -197,16 +240,16 @@ class SpriteBank:
         # Community Codex pet sheets sometimes carry compressed magenta key pixels
         # around transparent edges. Remove them before tkinter scales the frame.
         image = image.convert("RGBA")
-        pixels = image.load()
-        for y in range(image.height):
-            for x in range(image.width):
-                r, g, b, a = pixels[x, y]
-                # Pure #ff00ff often becomes a family of purple edge pixels after
-                # webp compression, so treat saturated purple as removable key.
-                chroma_family = r > 120 and b > 120 and g < 120 and abs(r - b) < 95
-                barely_visible = a < 28
-                if chroma_family or barely_visible:
-                    pixels[x, y] = (0, 0, 0, 0)
+        def clean_pixel(pixel: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+            r, g, b, a = pixel
+            # Pure #ff00ff often becomes a family of purple edge pixels after
+            # webp compression, so treat saturated purple as removable key.
+            chroma_family = r > 120 and b > 120 and g < 120 and abs(r - b) < 95
+            barely_visible = a < 28
+            return (0, 0, 0, 0) if chroma_family or barely_visible else pixel
+
+        cleaned = [clean_pixel(pixel) for pixel in image.getdata()]
+        image.putdata(cleaned)
         return image
 
     def tk_frames(self, animation: str) -> list["ImageTk.PhotoImage"]:
@@ -250,7 +293,10 @@ class CompanionPet:
         self.frame_index = 0
         self.walk_target = None
         self.drag_offset = None
+        self.drag_start = None
+        self.drag_moved = False
         self.dance_until = 0.0
+        self.phrases = pick_phrase_sample(pet_id)
         self.phrase = self.next_phrase()
         self.next_phrase_at = time.time() + random.randint(5, 11)
 
@@ -273,7 +319,14 @@ class CompanionPet:
         return self.root.winfo_x(), self.root.winfo_y()
 
     def next_phrase(self) -> str:
-        return random.choice(PET_PHRASES.get(self.pet_id.lower(), DEFAULT_PHRASES))
+        if not self.phrases:
+            self.phrases = pick_phrase_sample(self.pet_id)
+        return random.choice(self.phrases)
+
+    def reload_phrases(self) -> None:
+        self.phrases = pick_phrase_sample(self.pet_id)
+        self.phrase = self.next_phrase()
+        self.next_phrase_at = time.time() + random.randint(5, 11)
 
     def tick(self, now: float) -> None:
         self.maybe_walk()
@@ -347,16 +400,24 @@ class CompanionPet:
 
     def start_drag(self, event) -> None:
         self.drag_offset = (event.x, event.y)
+        self.drag_start = (self.root.winfo_pointerx(), self.root.winfo_pointery())
+        self.drag_moved = False
         self.walk_target = None
 
     def drag(self, event) -> None:
         if not self.drag_offset:
             return
+        if self.drag_start:
+            dx = self.root.winfo_pointerx() - self.drag_start[0]
+            dy = self.root.winfo_pointery() - self.drag_start[1]
+            if math.hypot(dx, dy) > 4:
+                self.drag_moved = True
         ox, oy = self.drag_offset
         self.root.geometry(f"+{self.root.winfo_pointerx() - ox}+{self.root.winfo_pointery() - oy}")
 
     def stop_drag(self, _event=None) -> None:
         self.drag_offset = None
+        self.drag_start = None
 
     def show_menu(self, event) -> None:
         self.menu.tk_popup(event.x_root, event.y_root)
@@ -391,6 +452,8 @@ class DesktopPet:
         self.image_item = None
         self.walk_target = None
         self.drag_offset = None
+        self.drag_start = None
+        self.drag_moved = False
         self.sleeping_until = 0.0
         self.action_until = 0.0
         self.action_animation = None
@@ -398,6 +461,7 @@ class DesktopPet:
         self.last_tick = time.time()
         self.last_save = 0.0
         self.hover_stats = False
+        self.phrases = pick_phrase_sample(self.pet_id)
         self.phrase = self.next_phrase()
         self.next_phrase_at = time.time() + 6
         self.companions: list[CompanionPet] = []
@@ -411,9 +475,11 @@ class DesktopPet:
         self.menu.add_command(label="Play", command=self.play)
         self.menu.add_command(label="Sleep", command=self.sleep)
         self.menu.add_command(label="Stats", command=self.show_stats)
+        self.menu.add_command(label="Revive", command=self.revive)
         self.menu.add_separator()
         self.menu.add_command(label="Change Pet", command=self.show_pet_menu)
         self.menu.add_command(label="Companions", command=self.show_companion_menu)
+        self.menu.add_command(label="Pet Settings", command=self.show_pet_settings)
         self.menu.add_command(label="Help / About", command=self.show_about)
         self.menu.add_command(label="Hide", command=self.hide)
         self.menu.add_command(label="Quit", command=self.quit)
@@ -614,8 +680,17 @@ class DesktopPet:
         self.canvas.create_text(64, 10, text=text, fill="#333333", font=("Segoe UI", 8, "bold"))
 
     def next_phrase(self) -> str:
-        choices = PET_PHRASES.get((self.pet_id or "").lower(), DEFAULT_PHRASES)
-        return random.choice(choices)
+        if not self.phrases:
+            self.phrases = pick_phrase_sample(self.pet_id)
+        return random.choice(self.phrases)
+
+    def reload_phrases(self) -> None:
+        self.phrases = pick_phrase_sample(self.pet_id)
+        self.phrase = self.next_phrase()
+        self.next_phrase_at = time.time() + 6
+        for companion in self.companions:
+            if companion.pet_id == self.pet_id:
+                companion.reload_phrases()
 
     def show_hover_stats(self, _event=None) -> None:
         self.hover_stats = True
@@ -625,16 +700,27 @@ class DesktopPet:
 
     def start_drag(self, event) -> None:
         self.drag_offset = (event.x, event.y)
+        self.drag_start = (self.root.winfo_pointerx(), self.root.winfo_pointery())
+        self.drag_moved = False
         self.walk_target = None
 
     def drag(self, event) -> None:
         if not self.drag_offset:
             return
+        if self.drag_start:
+            dx = self.root.winfo_pointerx() - self.drag_start[0]
+            dy = self.root.winfo_pointery() - self.drag_start[1]
+            if math.hypot(dx, dy) > 4:
+                self.drag_moved = True
         ox, oy = self.drag_offset
         self.root.geometry(f"+{self.root.winfo_pointerx() - ox}+{self.root.winfo_pointery() - oy}")
 
     def pet(self, _event=None) -> None:
         self.drag_offset = None
+        self.drag_start = None
+        if self.drag_moved:
+            self.drag_moved = False
+            return
         self.stats.happiness = min(100, self.stats.happiness + 5)
         if self.stats.alive:
             self.animation = "happy"
@@ -656,6 +742,18 @@ class DesktopPet:
     def sleep(self) -> None:
         self.sleeping_until = time.time() + 20
         self.stats.energy = min(100, self.stats.energy + 30)
+
+    def revive(self) -> None:
+        if not self.stats.alive:
+            self.stats.hunger = 50
+            self.stats.happiness = 50
+            self.stats.energy = 50
+            self.stats.alive = True
+            self.phrase = "I'm back!"
+            self.next_phrase_at = time.time() + 4
+            self.save_state()
+        else:
+            messagebox.showinfo(APP_NAME, "Your pet is already okay.")
 
     def show_stats(self) -> None:
         messagebox.showinfo(
@@ -681,9 +779,10 @@ class DesktopPet:
             "- Hover: show hunger, happiness, and energy\n"
             "- Right-click: open care/options menu\n\n"
             "Main menu:\n"
-            "- Feed, Play, Sleep, Stats\n"
+            "- Feed, Play, Sleep, Stats, Revive\n"
             "- Change Pet: switch installed Codex pets\n"
             "- Companions: add extra pets to wander together\n"
+            "- Pet Settings: choose Japanese, English, or Custom phrases\n"
             "- Hide or Quit from the menu or tray icon\n\n"
             "Pets are loaded from ~/.codex/pets.",
         )
@@ -724,6 +823,95 @@ class DesktopPet:
             fill="x", padx=16, pady=(10, 14)
         )
 
+    def show_pet_settings(self) -> None:
+        if not self.pet_id:
+            messagebox.showinfo(APP_NAME, "No Codex pet is selected.")
+            return
+
+        directory = pet_dir(self.pet_id)
+        if not directory:
+            messagebox.showinfo(APP_NAME, "No Codex pet folder was found.")
+            return
+
+        current_language, current_phrases = phrase_pool_for_pet(self.pet_id)
+        if current_language not in {"jp", "en", "custom"}:
+            current_language = "jp"
+
+        window = tk.Toplevel(self.root)
+        window.title("Pet Settings")
+        window.attributes("-topmost", True)
+        window.resizable(True, True)
+        window.geometry("360x360")
+
+        tk.Label(window, text=f"Pet: {self.pet_id}", font=("Segoe UI", 11, "bold")).pack(padx=14, pady=(12, 6))
+
+        language_var = tk.StringVar(value=current_language)
+        radio_frame = tk.Frame(window)
+        radio_frame.pack(fill="x", padx=14)
+
+        text_frame = tk.Frame(window)
+        text_frame.pack(fill="both", expand=True, padx=14, pady=8)
+        scrollbar = tk.Scrollbar(text_frame)
+        scrollbar.pack(side="right", fill="y")
+        text = tk.Text(text_frame, height=10, wrap="word", yscrollcommand=scrollbar.set)
+        text.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=text.yview)
+
+        custom_prefill = list(current_phrases)
+
+        def set_text(lines: list[str], editable: bool) -> None:
+            text.configure(state="normal")
+            text.delete("1.0", "end")
+            text.insert("1.0", "\n".join(lines))
+            text.configure(state="normal" if editable else "disabled")
+
+        def selected_lines() -> list[str]:
+            selected = language_var.get()
+            if selected == "en":
+                return PHRASES_EN
+            if selected == "custom":
+                custom = read_custom_phrases(self.pet_id)
+                current_text = [line.strip() for line in text.get("1.0", "end").splitlines() if line.strip()]
+                return custom or current_text or custom_prefill
+            return PHRASES_JP
+
+        def refresh_text() -> None:
+            set_text(selected_lines(), language_var.get() == "custom")
+
+        for value, label in (("jp", "Japanese"), ("en", "English"), ("custom", "Custom")):
+            tk.Radiobutton(radio_frame, text=label, variable=language_var, value=value, command=refresh_text).pack(
+                side="left", padx=(0, 12)
+            )
+
+        refresh_text()
+
+        def save_settings() -> None:
+            selected = language_var.get()
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "petconfig.json").write_text(
+                json.dumps({"phrase_language": selected}, indent=2),
+                encoding="utf-8",
+            )
+
+            phrases_path = directory / "phrases.json"
+            if selected == "custom":
+                lines = [line.strip() for line in text.get("1.0", "end").splitlines() if line.strip()]
+                if not lines:
+                    messagebox.showinfo(APP_NAME, "Custom phrases need at least one line.")
+                    return
+                phrases_path.write_text(json.dumps(lines, indent=2, ensure_ascii=False), encoding="utf-8")
+            elif phrases_path.exists():
+                phrases_path.unlink()
+
+            self.reload_phrases()
+            messagebox.showinfo(APP_NAME, "Pet settings saved.")
+            window.destroy()
+
+        button_frame = tk.Frame(window)
+        button_frame.pack(fill="x", padx=14, pady=(0, 12))
+        tk.Button(button_frame, text="Save", command=save_settings).pack(side="right")
+        tk.Button(button_frame, text="Cancel", command=window.destroy).pack(side="right", padx=(0, 8))
+
     def restore_companions(self) -> None:
         for item in self.state.get("companions", []):
             pet_id = item.get("pet_id")
@@ -758,8 +946,7 @@ class DesktopPet:
         self.pet_id = pet_id
         self.sprite_bank = SpriteBank(pet_id)
         self.frame_index = 0
-        self.phrase = self.next_phrase()
-        self.next_phrase_at = time.time() + 6
+        self.reload_phrases()
         self.save_state()
         window.destroy()
 
